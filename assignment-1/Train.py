@@ -6,12 +6,11 @@ from tqdm import tqdm
 import time
 def train_model(model, model_name,
                 train_loader, val_loader, 
-                num_epochs=10, 
-                learning_rate=0.001, weight_decay=1e-5, 
-                step_size = 5,  gamma = 0.5,
-                patience=5, device=None, seed=None):
+                num_epochs, 
+                learning_rate, weight_decay, 
+                step_size,  gamma,
+                patience, device=None, seed=None):
     '''
-    batch_size 
     input:
             model 
             dataloader(train, validation)
@@ -24,6 +23,7 @@ def train_model(model, model_name,
             validation_losses
             training_losses
     '''
+    
     if seed is not None:
         torch.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
@@ -33,7 +33,13 @@ def train_model(model, model_name,
 
     # 把模型搬到cpu或是gpu
     if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+            torch.cuda.empty_cache()
+        else:
+            device = torch.device("cpu")
+    
+    print(f"Using device: {device}")
     model = model.to(device)
 
     # 設定一些訓練工具
@@ -49,7 +55,7 @@ def train_model(model, model_name,
     best_val_loss = float('inf')
     early_stop_counter = 0
     # record the training process
-    train_losses, val_losses, lr = [], [], []
+    train_losses, val_losses, LearningRate = [], [], []
     
     start_time = time.time()
     for epoch in range(num_epochs):
@@ -108,7 +114,7 @@ def train_model(model, model_name,
         val_accuracy = correct / total
         val_losses.append(val_loss)
         current_lr = scheduler.get_last_lr()[0]
-        lr.append(current_lr)
+        LearningRate.append(current_lr)
         print(f'Epoch {epoch+1}/{num_epochs}, '
               f'Train Loss: {train_loss:.4f}, '
               f'Val Loss: {val_loss:.4f}, '
@@ -127,5 +133,4 @@ def train_model(model, model_name,
                 print(f"Stop!! Loss does not improve in {patience} epochs")
                 break
     end_time = time.time()
-    model.load_state_dict(torch.load(f'{model_name}_best_model.pth'))
-    return model, train_losses, val_losses, start_time - end_time
+    return end_time - start_time, train_losses, val_losses, LearningRate
