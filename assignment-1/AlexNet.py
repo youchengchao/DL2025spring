@@ -44,7 +44,6 @@ class AlexNet(nn.Module):
             nn.Linear(4096, num_classes),
         )
         self.init_weights()
-        print("初始化完成")
 
     def forward(self, x):
         x = self.features(x)

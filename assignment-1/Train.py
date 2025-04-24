@@ -1,5 +1,4 @@
 import torch
-import os
 import random
 import numpy as np
 from tqdm import tqdm
@@ -8,7 +7,7 @@ def train_model(model, model_name,
                 train_loader, val_loader, 
                 num_epochs, 
                 learning_rate, weight_decay, 
-                step_size,  gamma,
+                lr_patience,  factor,
                 patience, device=None, seed=None):
     '''
     input:
@@ -46,9 +45,16 @@ def train_model(model, model_name,
     optimizer = torch.optim.Adam(model.parameters(), 
                                  lr = learning_rate, 
                                  weight_decay = weight_decay)
+    
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer,
+                                                           mode = 'min',
+                                                           patience = lr_patience, 
+                                                           factor = factor)
+    '''
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 
                                                 step_size = step_size, 
-                                                gamma = gamma)
+                                                gamma = factor)
+    '''
     loss_func = torch.nn.CrossEntropyLoss()
 
     # early stopping needed parameters
@@ -84,7 +90,7 @@ def train_model(model, model_name,
         train_loss = train_loss / len(train_loader.dataset)
         train_losses.append(train_loss)
 
-        scheduler.step() # 更新learning rate
+        
         # 驗證階段
         model.eval()
         val_loss = 0.0
@@ -115,6 +121,9 @@ def train_model(model, model_name,
         val_losses.append(val_loss)
         current_lr = scheduler.get_last_lr()[0]
         LearningRate.append(current_lr)
+
+        scheduler.step(val_loss) # 更新learning rate
+
         print(f'Epoch {epoch+1}/{num_epochs}, '
               f'Train Loss: {train_loss:.4f}, '
               f'Val Loss: {val_loss:.4f}, '

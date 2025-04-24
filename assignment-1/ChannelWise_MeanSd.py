@@ -1,5 +1,4 @@
-from ImageClassDataset import ImageClassDataset
-from DataloaderWrapper import DataloaderWrapper
+from prepareLoader import ImageClassDataset, DataloaderWrapper
 
 def compute_dataset_mean_std(filename, transform):
     dataset = ImageClassDataset(filename, transform=transform)

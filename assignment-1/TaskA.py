@@ -1,104 +1,142 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
-class DynamicWeightConv(nn.Module):
-    def __init__(self, out_channels, kernel_size, stride=1, padding=0, latent_dim=64):
+"""
+class A_Conv(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size=3, pool_out_size=(1, 1), drop=True):
         super().__init__()
-
+        self.in_channels = in_channels
         self.out_channels = out_channels
         self.kernel_size = kernel_size if isinstance(kernel_size, tuple) else (kernel_size, kernel_size)
-        self.stride = stride
-        self.padding = padding
-        self.latent_dim = latent_dim
+        self.pool_out_size = pool_out_size
+        self.drop = drop  # 控制是否啟用 drop channel 機制
 
-        # 核心 kernel generator，不使用固定 in_channels，而是用 latent 向量做中繼表示
-        self.kernel_generator = nn.Sequential(
-            nn.Linear(latent_dim, latent_dim),
-            nn.ReLU(),
-            nn.Linear(latent_dim, latent_dim),
-            nn.ReLU()
-        )
+        kH, _ = self.kernel_size
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=self.kernel_size, padding=kH // 2)
+        self.bn = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU(inplace=True)
+        self.pool = nn.AdaptiveAvgPool2d(pool_out_size)
 
-        self.final_proj = None
+    def pad_to_in_channels(self, x):
+        B, C, H, W = x.shape
+        if C < self.in_channels:
+            pad = torch.zeros(B, self.in_channels - C, H, W, device=x.device, dtype=x.dtype)
+            x = torch.cat([x, pad], dim=1)
+        return x[:, :self.in_channels]
+
+    def channel_dropout(self, x):
+        B, C, H, W = x.shape
+        mask = torch.ones_like(x)
+        for i in range(B):
+            drop_n = random.randint(1, C - 1) if C > 1 else 0
+            drop_idx = torch.randperm(C)[:drop_n]
+            mask[i, drop_idx] = 0
+        return x * mask
 
     def forward(self, x):
-        B, C, H, W = x.shape  # B: batch size, C: input channels
-        in_channels = C
+        # training mode時，開啟dropout
+        x = self.pad_to_in_channels(x)
+        if self.drop and self.training:
+            x = self.channel_dropout(x)
+        x = self.conv(x)
+        x = self.bn(x)
+        x = self.relu(x)
+        x = self.pool(x)
+        return x
+"""
 
-        # 第一次 forward 時根據實際通道數建立 final projection 層
-        if self.final_proj is None:
-            self.final_proj = nn.Linear(
-                self.latent_dim, 
-                self.out_channels * in_channels * self.kernel_size[0] * self.kernel_size[1]
-            ).to(x.device)
+class ChannelGate(nn.Module):
+    def __init__(self, in_channels):
+        super().__init__()
+        self.fc = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(in_channels, in_channels),
+            nn.Sigmoid()
+        )
+    
+    def forward(self, x):
+        gate = self.fc(x)  # shape: (B, C)
+        return x * gate.view(x.size(0), -1, 1, 1)
 
-        # 從輸入影像中取得每張圖的通道摘要 (mean pooling)，shape: (B, C)
-        kernel_input = F.adaptive_avg_pool2d(x, (1, 1)).view(B, C)
+class A_Conv(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size=3, pool_out_size=(1, 1), drop=False):
+        super().__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = kernel_size if isinstance(kernel_size, tuple) else (kernel_size, kernel_size)
+        self.pool_out_size = pool_out_size
+        self.drop = drop  # 可選開啟 channel dropout
 
-        # 若輸入通道數不等於 latent_dim，需做一次線性轉換（動態建立 Linear）
-        if C != self.latent_dim:
-            # ⚠ 注意：這樣每次 forward 都會重新 new Linear，可考慮搬到 __init__ 搭配 ModuleDict 優化
-            kernel_input = nn.Linear(C, self.latent_dim).to(x.device)(kernel_input)
+        self.channel_gate = ChannelGate(in_channels)
 
-        # 通過 kernel generator 建立中間特徵表示
-        features = self.kernel_generator(kernel_input)
+        kH, _ = self.kernel_size
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=self.kernel_size, padding=kH // 2)
+        self.bn = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU(inplace=True)
+        self.pool = nn.AdaptiveAvgPool2d(pool_out_size)
 
-        # 通過 final projection 映射成 kernel 向量（每張圖一組 kernel）
-        kernels = self.final_proj(features)
+    def pad_to_in_channels(self, x):
+        B, C, H, W = x.shape
+        if C < self.in_channels:
+            pad = torch.zeros(B, self.in_channels - C, H, W, device=x.device, dtype=x.dtype)
+            x = torch.cat([x, pad], dim=1)
+        return x[:, :self.in_channels]
 
-        # reshape 成 [B, Cout, Cin, kH, kW]
-        kernels = kernels.view(B, self.out_channels, in_channels, *self.kernel_size)
-
-        # 每張圖片用自己專屬的 kernel 做卷積
-        outputs = []
+    def channel_dropout(self, x):
+        B, C, H, W = x.shape
+        mask = torch.ones_like(x)
         for i in range(B):
-            out = F.conv2d(
-                x[i:i+1],           # 單張圖片 (1, C, H, W)
-                kernels[i],         # 對應的 kernel (Cout, Cin, kH, kW)
-                stride=self.stride,
-                padding=self.padding
-            )
-            outputs.append(out)
+            drop_n = random.randint(1, C - 1) if C > 1 else 0
+            drop_idx = torch.randperm(C)[:drop_n]
+            mask[i, drop_idx] = 0
+        return x * mask
 
-        # 把每張圖卷積結果接回一起，shape: (B, Cout, H_out, W_out)
-        return torch.cat(outputs, dim=0)
+    def forward(self, x):
+        
+        x = self.pad_to_in_channels(x)
+
+        if self.drop and self.training:
+            x = self.channel_dropout(x)
+        
+        gate = self.channel_gate(x) 
+        x = x * gate
+
+        x = self.conv(x)
+        x = self.bn(x)
+        x = self.relu(x)
+        x = self.pool(x)
+        return x
+
 
 class TaskA_AlexNet(nn.Module):
     def __init__(self, num_classes=1000):  # 可改成自己的類別數
         super().__init__()
+        self.drop = None
         self.features = nn.Sequential(
             # conv1
-            nn.Conv2d(3, 96, kernel_size=11, stride=4, padding=2),  
-            nn.BatchNorm2d(96),
+            A_Conv(in_channels=3, out_channels=96, kernel_size=11, pool_out_size=(55, 55), drop=self.drop),
             nn.ReLU(inplace=True),
-
             # pool1
             nn.MaxPool2d(kernel_size=3, stride=2),                  
-
             # conv2
             nn.Conv2d(96, 256, kernel_size=5, padding=2),           
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
-
             # pool2
             nn.MaxPool2d(kernel_size=3, stride=2),
-
             # conv3
             nn.Conv2d(256, 384, kernel_size=3, padding=1),          
             nn.BatchNorm2d(384),
             nn.ReLU(inplace=True),
-
             # conv4
             nn.Conv2d(384, 384, kernel_size=3, padding=1),          
             nn.BatchNorm2d(384),
             nn.ReLU(inplace=True),
-
             # conv5
             nn.Conv2d(384, 256, kernel_size=3, padding=1),          
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
-            
             # pool5
             nn.MaxPool2d(kernel_size=3, stride=2),
         )
@@ -112,15 +150,19 @@ class TaskA_AlexNet(nn.Module):
             nn.Linear(4096, num_classes),
         )
         self.init_weights()
-        print("初始化完成")
 
     def forward(self, x):
+        if self.training:
+            self.drop = True
+        else:
+            self.drop = False
         x = self.features(x)
         x = torch.flatten(x, 1) 
         x = self.classifier(x)
         return x
     
     def init_weights(self):
+        self.drop = True
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.xavier_uniform_(m.weight)

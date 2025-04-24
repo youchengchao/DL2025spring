@@ -2,36 +2,137 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class TwoLayerCNN(nn.Module):
-    def __init__(self):
-        super(TwoLayerCNN, self).__init__()
-        # 第一個卷積層: 輸入通道數為1，輸出通道數為16，卷積核大小為3x3
-        self.conv1 = nn.Conv2d(in_channels=1, out_channels=16, kernel_size=3, stride=1, padding=1)
-        # 第二個卷積層: 輸入通道數為16，輸出通道數為32，卷積核大小為3x3
-        self.conv2 = nn.Conv2d(in_channels=16, out_channels=32, kernel_size=3, stride=1, padding=1)
-        # 全連接層
-        self.fc1 = nn.Linear(32 * 7 * 7, 128)  # 假設輸入影像大小為28x28
-        self.fc2 = nn.Linear(128, 10)  # 假設有10個分類
+# Multi-Head Self-Attention
+import torch
+import torch.nn as nn
+
+# Multi-Head Self-Attention
+class MHSA(nn.Module):
+    def __init__(self, dim, heads=4):
+        super().__init__()
+        self.attn = nn.MultiheadAttention(embed_dim=dim, num_heads=heads, batch_first=True)
+        self.norm = nn.LayerNorm(dim)
 
     def forward(self, x):
-        # 第一層卷積 + ReLU + 最大池化
-        x = F.relu(self.conv1(x))
-        x = F.max_pool2d(x, kernel_size=2, stride=2)
-        # 第二層卷積 + ReLU + 最大池化
-        x = F.relu(self.conv2(x))
-        x = F.max_pool2d(x, kernel_size=2, stride=2)
-        # 展平
-        x = x.view(x.size(0), -1)
-        # 全連接層
-        x = F.relu(self.fc1(x))
-        x = self.fc2(x)
-        return x
+        B, C, H, W = x.shape
+        x = x.view(B, C, H * W).permute(0, 2, 1)  # [B, HW, C]
+        out, _ = self.attn(x, x, x)
+        out = self.norm(out + x)
+        out = out.permute(0, 2, 1).view(B, C, H, W)
+        return out
 
-# 測試模型結構
-if __name__ == "__main__":
-    model = TwoLayerCNN()
-    print(model)
-    # 測試輸入
-    sample_input = torch.randn(1, 1, 28, 28)  # Batch size = 1, 單通道, 28x28影像
-    output = model(sample_input)
-    print(output.shape)  # 預期輸出形狀: [1, 10]
+# 主模型 TaskBNet
+class TaskBNet(nn.Module):
+    def __init__(self, in_channels=3, num_classes=1000, dim=32):
+        super().__init__()
+        self.wide1 = nn.Sequential(
+            nn.Conv2d(in_channels, dim, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(dim),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),  # 112x112
+        )
+
+        self.down_mhsa = nn.Sequential(
+            nn.Conv2d(dim, dim, kernel_size=3, stride=2, padding=1, bias=False),  # 56x56
+            nn.BatchNorm2d(dim),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),  # 28x28
+            MHSA(dim),
+        )
+
+        self.wide2 = nn.Sequential(
+            nn.Conv2d(dim, dim, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(dim),
+            nn.ReLU(inplace=True),
+        )
+
+        self.pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(dim, num_classes)
+
+    def forward(self, x):
+        x = self.wide1(x)
+        x = self.down_mhsa(x)
+        x = self.wide2(x)
+        x = self.pool(x).view(x.size(0), -1)
+        return self.fc(x)
+
+# Ablation without MHSA
+class Ablation_MHSA(nn.Module):
+    def __init__(self, in_channels=3, num_classes=1000, dim=32):
+        super().__init__()
+        self.wide1 = nn.Sequential(
+            nn.Conv2d(in_channels, dim, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(dim),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+        )
+        self.wide2 = nn.Sequential(
+            nn.Conv2d(dim, dim, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(dim),
+            nn.ReLU(inplace=True),
+        )
+        self.pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(dim, num_classes)
+
+    def forward(self, x):
+        x = self.wide1(x)
+        x = self.wide2(x)
+        x = self.pool(x).view(x.size(0), -1)
+        return self.fc(x)
+
+# Ablation without wide1
+class Ablation_wide1(nn.Module):
+    def __init__(self, in_channels=3, num_classes=1000, dim=32):
+        super().__init__()
+        self.stem = nn.Sequential(
+            nn.Conv2d(in_channels, dim, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(dim),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),  # 112x112
+        )
+        self.down_mhsa = nn.Sequential(
+            nn.Conv2d(dim, dim, kernel_size=3, stride=2, padding=1, bias=False),  # 56x56
+            nn.BatchNorm2d(dim),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),  # 28x28
+            MHSA(dim),
+        )
+        self.wide2 = nn.Sequential(
+            nn.Conv2d(dim, dim, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(dim),
+            nn.ReLU(inplace=True),
+        )
+        self.pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(dim, num_classes)
+
+    def forward(self, x):
+        x = self.stem(x)
+        x = self.down_mhsa(x)
+        x = self.wide2(x)
+        x = self.pool(x).view(x.size(0), -1)
+        return self.fc(x)
+
+# Ablation without wide2
+class Ablation_wide2(nn.Module):
+    def __init__(self, in_channels=3, num_classes=1000, dim=32):
+        super().__init__()
+        self.wide1 = nn.Sequential(
+            nn.Conv2d(in_channels, dim, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(dim),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),  # 112x112
+        )
+        self.down_mhsa = nn.Sequential(
+            nn.Conv2d(dim, dim, kernel_size=3, stride=2, padding=1, bias=False),  # 56x56
+            nn.BatchNorm2d(dim),
+            nn.ReLU(inplace=True),
+            MHSA(dim),
+        )
+        self.pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(dim, num_classes)
+
+    def forward(self, x):
+        x = self.wide1(x)
+        x = self.down_mhsa(x)
+        x = self.pool(x).view(x.size(0), -1)
+        return self.fc(x)
