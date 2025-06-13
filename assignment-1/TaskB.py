@@ -2,34 +2,40 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# Multi-Head Self-Attention
-import torch
-import torch.nn as nn
 
-# Multi-Head Self-Attention
-class MHSA(nn.Module):
-    def __init__(self, dim, heads=4):
-        super().__init__()
-        self.attn = nn.MultiheadAttention(embed_dim=dim, num_heads=heads, batch_first=True)
-        self.norm = nn.LayerNorm(dim)
+class WideBasicBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, stride=1, dropout_rate=0.0):
+        super(WideBasicBlock, self).__init__()
+        self.bn1 = nn.BatchNorm2d(in_channels)
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False)
+        self.dropout = nn.Dropout(p=dropout_rate)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
+
+        if in_channels != out_channels or stride != 1:
+            self.shortcut = nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False)
+        else:
+            self.shortcut = nn.Identity()
 
     def forward(self, x):
-        B, C, H, W = x.shape
-        x = x.view(B, C, H * W).permute(0, 2, 1)  # [B, HW, C]
-        out, _ = self.attn(x, x, x)
-        out = self.norm(out + x)
-        out = out.permute(0, 2, 1).view(B, C, H, W)
+        out = F.relu(self.bn1(x))
+        out = self.conv1(out)
+        out = self.dropout(out)
+        out = F.relu(self.bn2(out))
+        out = self.conv2(out)
+        out += self.shortcut(x)
         return out
 
-# 主模型 TaskBNet
+
+
 class TaskBNet(nn.Module):
     def __init__(self, in_channels=3, num_classes=1000, dim=32):
         super().__init__()
-        self.wide1 = nn.Sequential(
+        self.channel_wise_Conv = nn.Sequential(
             nn.Conv2d(in_channels, dim, kernel_size=3, stride=1, padding=1, bias=False),
             nn.BatchNorm2d(dim),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),  # 112x112
+            nn.MaxPool2d(kernel_size=2, stride=2),
         )
 
         self.down_mhsa = nn.Sequential(
@@ -41,7 +47,7 @@ class TaskBNet(nn.Module):
         )
 
         self.wide2 = nn.Sequential(
-            nn.Conv2d(dim, dim, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.Conv2d(dim, in_channels, kernel_size=3, stride=1, padding=1, bias=False),
             nn.BatchNorm2d(dim),
             nn.ReLU(inplace=True),
         )
@@ -67,7 +73,7 @@ class Ablation_MHSA(nn.Module):
             nn.MaxPool2d(kernel_size=2, stride=2),
         )
         self.wide2 = nn.Sequential(
-            nn.Conv2d(dim, dim, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.Conv2d(dim, in_channels, kernel_size=3, stride=1, padding=1, bias=False),
             nn.BatchNorm2d(dim),
             nn.ReLU(inplace=True),
         )
@@ -84,26 +90,20 @@ class Ablation_MHSA(nn.Module):
 class Ablation_wide1(nn.Module):
     def __init__(self, in_channels=3, num_classes=1000, dim=32):
         super().__init__()
-        self.stem = nn.Sequential(
-            nn.Conv2d(in_channels, dim, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.BatchNorm2d(dim),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),  # 112x112
-        )
         self.down_mhsa = nn.Sequential(
-            nn.Conv2d(dim, dim, kernel_size=3, stride=2, padding=1, bias=False),  # 56x56
+            nn.Conv2d(in_channels, dim, kernel_size=3, stride=2, padding=1, bias=False),  # 56x56
             nn.BatchNorm2d(dim),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=2, stride=2),  # 28x28
             MHSA(dim),
         )
         self.wide2 = nn.Sequential(
-            nn.Conv2d(dim, dim, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.Conv2d(dim, in_channels, kernel_size=3, stride=1, padding=1, bias=False),
             nn.BatchNorm2d(dim),
             nn.ReLU(inplace=True),
         )
         self.pool = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = nn.Linear(dim, num_classes)
+        self.fc = nn.Linear(in_channels, num_classes)
 
     def forward(self, x):
         x = self.stem(x)

@@ -1,4 +1,0 @@
-d:
-cd DL_hw2
-conda activate d:/DL
-python scripts/eval.py --weights scripts/models/trained/FridayDinner_stage3_best.pth --data_root data --task all
