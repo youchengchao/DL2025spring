@@ -1,0 +1,16 @@
+# Core packages
+numpy
+pillow
+matplotlib
+jupyter
+pycocotools
+
+# Torch + torchvision with CUDA 12.6 support (官方 whl）
+torch==2.3.0+cu126
+torchvision==0.18.0+cu126
+torchaudio==2.3.0+cu126
+# 安裝時請指定 PyTorch 官方 CUDA wheel index
+
+# 可選（除錯與開發）
+tqdm
+ipykernel

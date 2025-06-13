@@ -1,0 +1,4 @@
+d:
+cd DL_hw2/scripts
+conda activate d:/DL
+python train.py --reco_code QuickDemo --n_epoch 10 --n_workers 4 --batch_size 8 --init_lr 1e-3
